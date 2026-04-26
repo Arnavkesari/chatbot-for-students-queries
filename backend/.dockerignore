@@ -13,3 +13,8 @@ chatbotEnv/
 README.md
 *.log
 *.egg-info/
+venv/
+.venv/
+pycache/
+.pytest_cache/
+.mypy_cache/
