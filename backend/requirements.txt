@@ -21,7 +21,6 @@ langchain-huggingface
 pinecone-client>=2.2.0
 langchain-pinecone
 textblob==0.15.3
-sentence-transformers
 
 # PDF processing
 PyPDF2==3.0.1

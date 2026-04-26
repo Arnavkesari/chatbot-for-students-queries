@@ -1,9 +1,11 @@
 import os
 import tempfile
 import requests
+import time
+import random
 from PyPDF2 import PdfReader
 from langchain_text_splitters import CharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone
 from reportlab.pdfgen import canvas
@@ -15,17 +17,80 @@ import cloudinary.api
 from config.config import Config
 from services.cloudinary_service import CloudinaryService
 
+
+def _is_retryable_embedding_error(error):
+    error_str = str(error).lower()
+    return any(
+        keyword in error_str
+        for keyword in [
+            "429",
+            "too many requests",
+            "rate limit",
+            "503",
+            "502",
+            "504",
+            "service unavailable",
+            "timeout",
+            "connection",
+            "temporarily unavailable"
+        ]
+    )
+
+
+def _retry_with_backoff(func, max_retries=3, base_delay=1.5):
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as error:
+            last_error = error
+            if not _is_retryable_embedding_error(error) or attempt == max_retries - 1:
+                raise
+
+            delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+            print(f"Retrying embedding operation in {delay:.2f}s (attempt {attempt + 1}/{max_retries})")
+            time.sleep(delay)
+
+    if last_error:
+        raise last_error
+
 def get_embeddings_model():
     """Get embeddings model based on configured provider"""
-    provider = Config.AI_PROVIDER.lower()
-    
-    # Only use HuggingFace embeddings for all providers
-    print("Using HuggingFace embeddings (free) for vector storage")
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={'device': 'cpu'},
-        encode_kwargs={'normalize_embeddings': True}
-    )
+    if not Config.HUGGINGFACE_API_KEY:
+        raise ValueError("HUGGINGFACE_API_KEY is required for Hugging Face Inference API embeddings.")
+
+    print(f"Using Hugging Face Endpoint embeddings: {Config.HF_EMBEDDING_MODEL}")
+
+    # Keep compatibility across langchain-huggingface versions.
+    constructor_variants = [
+        {
+            "model": Config.HF_EMBEDDING_MODEL,
+            "task": "feature-extraction",
+            "huggingfacehub_api_token": Config.HUGGINGFACE_API_KEY,
+        },
+        {
+            "model": Config.HF_EMBEDDING_MODEL,
+            "huggingfacehub_api_token": Config.HUGGINGFACE_API_KEY,
+        },
+        {
+            "repo_id": Config.HF_EMBEDDING_MODEL,
+            "task": "feature-extraction",
+            "huggingfacehub_api_token": Config.HUGGINGFACE_API_KEY,
+        },
+    ]
+
+    last_error = None
+    for params in constructor_variants:
+        try:
+            return HuggingFaceEndpointEmbeddings(**params)
+        except TypeError as error:
+            last_error = error
+            continue
+
+    if last_error:
+        raise last_error
+
+    raise RuntimeError("Unable to initialize HuggingFaceEndpointEmbeddings.")
 
 def get_pdf_text(pdf_docs):
     """Extract text from PDF documents"""
@@ -113,8 +178,7 @@ def get_vector_store(text_chunks, metadatas=None):
         
         # Check if index exists, if not create it
         index_name = Config.PINECONE_INDEX_NAME
-        # Only HuggingFace embedding dimension is supported
-        dimension = 384
+        dimension = Config.EMBEDDING_DIMENSION
         
         # Check if the index already exists
         indexes = [idx.name for idx in pc.list_indexes()]
@@ -125,18 +189,31 @@ def get_vector_store(text_chunks, metadatas=None):
                 dimension=dimension,
                 metric="cosine"
             )
+        else:
+            try:
+                index_info = pc.describe_index(index_name)
+                existing_dimension = getattr(index_info, "dimension", None)
+                if existing_dimension and existing_dimension != dimension:
+                    raise ValueError(
+                        f"Pinecone index '{index_name}' has dimension {existing_dimension}, "
+                        f"but EMBEDDING_DIMENSION is {dimension}."
+                    )
+            except Exception as dimension_error:
+                print(f"Index dimension check warning: {dimension_error}")
         
         # Create embeddings with retry logic
         embeddings = get_embeddings_model()
         
         # Create and return the vector store
         print(f"Creating vector store from {len(clean_chunks)} chunks")
-        vectorstore = PineconeVectorStore.from_texts(
-            texts=clean_chunks,
-            embedding=embeddings,
-            metadatas=metadatas if metadatas and len(metadatas) == len(clean_chunks) else None,
-            index_name=index_name,
-            namespace="course_materials"
+        vectorstore = _retry_with_backoff(
+            lambda: PineconeVectorStore.from_texts(
+                texts=clean_chunks,
+                embedding=embeddings,
+                metadatas=metadatas if metadatas and len(metadatas) == len(clean_chunks) else None,
+                index_name=index_name,
+                namespace="course_materials"
+            )
         )
         
         return vectorstore
@@ -147,12 +224,14 @@ def get_vector_store(text_chunks, metadatas=None):
         default_text = ["This is a student query chatbot for academic assistance."]
         embeddings = get_embeddings_model()
         
-        vectorstore = PineconeVectorStore.from_texts(
-            texts=default_text,
-            embedding=embeddings,
-            metadatas=[{"source": "default"}],
-            index_name=Config.PINECONE_INDEX_NAME,
-            namespace="course_materials"
+        vectorstore = _retry_with_backoff(
+            lambda: PineconeVectorStore.from_texts(
+                texts=default_text,
+                embedding=embeddings,
+                metadatas=[{"source": "default"}],
+                index_name=Config.PINECONE_INDEX_NAME,
+                namespace="course_materials"
+            )
         )
         
         return vectorstore

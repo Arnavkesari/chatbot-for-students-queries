@@ -22,6 +22,8 @@ class Config:
     # HuggingFace configuration (alternative free option)
     HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
     HUGGINGFACE_MODEL = os.getenv("HUGGINGFACE_MODEL", "mistralai/Mixtral-8x7B-Instruct-v0.1")
+    HF_EMBEDDING_MODEL = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "384"))
 
     # Pinecone configuration
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")

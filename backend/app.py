@@ -36,7 +36,7 @@ from middleware.middleware import (
 )
 
 # Import utilities
-from utils.pdf_utils import create_embeddings, embeddings_exist
+from utils.pdf_utils import create_embeddings, embeddings_exist, get_embeddings_model
 
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
@@ -130,13 +130,7 @@ def create_app(config_name='default'):
         # Check if embeddings already exist in Pinecone
         if embeddings_exist():
             print("Embeddings already exist in Pinecone, skipping creation")
-            from langchain_huggingface import HuggingFaceEmbeddings
-            from langchain_pinecone import PineconeVectorStore
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={'device': 'cpu'},
-                encode_kwargs={'normalize_embeddings': True}
-            )
+            embeddings = get_embeddings_model()
             vectorstore_global = PineconeVectorStore(
                 index_name=app.config.get('PINECONE_INDEX_NAME'),
                 embedding=embeddings,

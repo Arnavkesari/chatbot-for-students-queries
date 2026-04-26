@@ -29,7 +29,7 @@ def retry_with_exponential_backoff(max_retries=3, base_delay=1):
                 except Exception as e:
                     error_str = str(e).lower()
                     # Check if it's a retryable error
-                    if any(keyword in error_str for keyword in ['timeout', '504', '503', '502', 'deadline', 'rate limit']):
+                    if any(keyword in error_str for keyword in ['timeout', '504', '503', '502', 'deadline', 'rate limit', '429', 'too many requests', 'service unavailable']):
                         if attempt < max_retries - 1:
                             # Exponential backoff with jitter
                             delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
@@ -274,7 +274,7 @@ class ChatService:
                 print(f"AI processing error: {str(ai_error)}")
                 error_str = str(ai_error).lower()
                 
-                if "quota" in error_str or "rate limit" in error_str:
+                if "quota" in error_str or "rate limit" in error_str or "429" in error_str or "too many requests" in error_str:
                     return {
                         "error": "AI service is currently at capacity. Please try again in a few moments.",
                         "user_friendly_error": True,
@@ -286,6 +286,12 @@ class ChatService:
                         "user_friendly_error": True,
                         "session_id": session_id
                     }, 408  # Request Timeout
+                elif "embedding" in error_str and any(keyword in error_str for keyword in ["503", "502", "service unavailable", "temporarily unavailable", "internal server error"]):
+                    return {
+                        "error": "Embedding service is temporarily unavailable. Please try again in a few moments.",
+                        "user_friendly_error": True,
+                        "session_id": session_id
+                    }, 503  # Service Unavailable
                 elif "embedding" in error_str:
                     return {
                         "error": "There was an issue processing your query for search. Please try rephrasing your question or try again later.",
